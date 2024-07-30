@@ -114,9 +114,9 @@ void loop() {
     float deltat = fusion.deltatUpdate();
     fusion.MadgwickUpdate(icm20600.getGyroscopeX(), icm20600.getGyroscopeY(), icm20600.getGyroscopeZ(), acc_x, acc_y, acc_z, x, y, z, deltat);
 
-    pitch = fusion.getRoll();
-    pitch = fusion.getPitch();
-    heading = fusion.getYaw();
+    // pitch = fusion.getRoll();
+    // pitch = fusion.getPitch();
+    // heading = fusion.getYaw();
 
     // Estimated heading (yaw)
     Serial.print("Heading: ");
@@ -126,14 +126,14 @@ void loop() {
     // Grab the heading value from here to test the IMU
     // For waveform types, see datasheet part 11.2
     // EDIT THIS PART OF THE CODE
-    drv.setWaveform(0, 123);
-    drv.setWaveform(1, 122);
-    drv.setWaveform(2, 121);
-    drv.setWaveform(3, 120);
-    drv.setWaveform(4, 119);
-    drv.setWaveform(5, 94);
-    drv.setWaveform(6, 0);  // end of waveforms
-    drv.go();
+    // drv.setWaveform(0, 123);
+    // drv.setWaveform(1, 122);
+    // drv.setWaveform(2, 121);
+    // drv.setWaveform(3, 120);
+    // drv.setWaveform(4, 119);
+    // drv.setWaveform(5, 94);
+    // drv.setWaveform(6, 0);  // end of waveforms
+    // drv.go();
     // EDIT THIS PART OF THE CODE
 
     delay(100);
