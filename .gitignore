@@ -1,10 +1,24 @@
+# KiCad specific files
+*-backups
+*.tmp
+*-save.pro
+*-save.kicad_pcb
+fp-info-cache
+jlcpcb
+Gerbers
+*.kicad_prl
+
+# VScode specific files
+c_cpp_properties.json
+
 # General
 .DS_Store
 .AppleDouble
 .LSOverride
 
 # Icon must end with two \r
-Icon
+Icon
+
 
 # Thumbnails
 ._*
