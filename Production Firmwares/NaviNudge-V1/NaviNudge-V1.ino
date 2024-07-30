@@ -1,5 +1,8 @@
 #include <Adafruit_BNO08x.h>
 #include <Adafruit_DRV2605.h> 
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
 #include "driver/rtc_io.h"
 
 // ================================ Variables =================================
@@ -16,6 +19,12 @@ float cache_array[32] = {0.0}; int cache_array_index = 0; bool cache_full = fals
 // ============================ Sensor Classes ================================
 Adafruit_BNO08x bno08x(BNO08X_RESET); sh2_SensorValue_t sensorValue;
 Adafruit_DRV2605 drv;
+// ============================================================================
+
+// ==================== BLE related variables/constants =======================
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+bool bluetooth_started = false;
 // ============================================================================
 
 // =========================== Helper functions ===============================
@@ -101,19 +110,37 @@ void loop() {
       // Shutoff peripherals
       bno08x.hardwareReset();
       //TODO: add sleep mode to IMU
-      // deep sleep for 2 seconds if system is still in low power mode
-      esp_sleep_enable_timer_wakeup(2 * 1000000);
+      // deep sleep for 1 seconds if system is still in low power mode
+      esp_sleep_enable_timer_wakeup(1 * 1000000);
       rtc_gpio_isolate(GPIO_NUM_5);
       rtc_gpio_isolate(GPIO_NUM_6);
       esp_deep_sleep_start();
     }
   } else if (master_state == 1) {
-    Serial.println("System now in standby mode! Turn on Bluetooth and stuff. There should be something else (maybe a timer?) to transition back to low power");
     if (millis() - time_at_initialise > 5 * 60 * 1000) {
       // Timer for 5 minutes to transition back into low power
       master_state = 0;
     }
     // Start Bluetooth
-    
+    if (!bluetooth_started) {
+      BLEDevice::init("XIAO_ESP32S3");
+      BLEServer *pServer = BLEDevice::createServer();
+      BLEService *pService = pServer->createService(SERVICE_UUID);
+      BLECharacteristic *pCharacteristic = pService->createCharacteristic(
+                                          CHARACTERISTIC_UUID,
+                                          BLECharacteristic::PROPERTY_READ |
+                                          BLECharacteristic::PROPERTY_WRITE
+                                        );
+      pCharacteristic->setValue("Hello World");
+      pService->start();
+      BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+      pAdvertising->addServiceUUID(SERVICE_UUID);
+      pAdvertising->setScanResponse(true);
+      pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
+      pAdvertising->setMinPreferred(0x12);
+      BLEDevice::startAdvertising();
+      Serial.println("Characteristic defined! Now you can read it in your phone!");
+      bluetooth_started = true;
+    }
   }
 }
