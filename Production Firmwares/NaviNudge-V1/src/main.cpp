@@ -1,7 +1,9 @@
+#include <Arduino.h>
 #include <Adafruit_BNO08x.h>
 #include <Adafruit_DRV2605.h> 
 #include <BLEDevice.h>
 #include <BLEUtils.h>
+#include <BLE2902.h>
 #include <BLEServer.h>
 #include "driver/rtc_io.h"
 
@@ -9,6 +11,7 @@
 int prev_state = 0; // This is the previous state of the device, so that our state machine can keep track
 int master_state = 0; // This is the master state of the device. 0=Low Power, 1=Standby
 unsigned long time_at_initialise = 0;
+unsigned long general_purpose_timer = 0;
 float cache_array[32] = {0.0}; int cache_array_index = 0; bool cache_full = false; // Caching for computation of variance
 // ============================================================================
 
@@ -24,7 +27,20 @@ Adafruit_DRV2605 drv;
 // ==================== BLE related variables/constants =======================
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+bool deviceConnected = false;
 bool bluetooth_started = false;
+BLECharacteristic *pCharacteristic;
+class MyServerCallbacks: public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) {
+    deviceConnected = true;
+  };
+  
+  void onDisconnect(BLEServer* pServer) {
+    deviceConnected = false;
+    pServer->startAdvertising(); // Allow reconnects
+    time_at_initialise = millis(); // Transition to low power after set time
+  }
+};
 // ============================================================================
 
 // =========================== Helper functions ===============================
@@ -85,9 +101,6 @@ void loop() {
     }
     if (bno08x.getSensorEvent(&sensorValue)) {
       if (sensorValue.sensorId == SH2_ACCELEROMETER) {
-        Serial.print(sensorValue.un.accelerometer.x); Serial.print("\t");
-        Serial.print(sensorValue.un.accelerometer.y); Serial.print("\t");
-        Serial.println(sensorValue.un.accelerometer.z);
         // Compute variance using a rolling window to determine whether to transition to standby mode
         float cumulative_movement = sensorValue.un.accelerometer.x + sensorValue.un.accelerometer.y + sensorValue.un.accelerometer.z;
         cache_array[cache_array_index] = cumulative_movement;
@@ -117,30 +130,52 @@ void loop() {
       esp_deep_sleep_start();
     }
   } else if (master_state == 1) {
-    if (millis() - time_at_initialise > 5 * 60 * 1000) {
+    if (millis() - time_at_initialise > 5 * 60 * 1000 && !deviceConnected) {
       // Timer for 5 minutes to transition back into low power
       master_state = 0;
     }
+
     // Start Bluetooth
     if (!bluetooth_started) {
-      BLEDevice::init("XIAO_ESP32S3");
+      BLEDevice::init("NaviNudge Left Node");
       BLEServer *pServer = BLEDevice::createServer();
-      BLEService *pService = pServer->createService(SERVICE_UUID);
-      BLECharacteristic *pCharacteristic = pService->createCharacteristic(
-                                          CHARACTERISTIC_UUID,
-                                          BLECharacteristic::PROPERTY_READ |
-                                          BLECharacteristic::PROPERTY_WRITE
+      pServer->setCallbacks(new MyServerCallbacks());
+
+      // For full list of premade BLE UUIDs, refer to this https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/GATT.pdf
+      BLEService *pService = pServer->createService(BLEUUID((uint16_t)0x1819)); // Create a location and navigation service
+      pCharacteristic = pService->createCharacteristic(
+                                          BLEUUID((uint16_t)0x2A30), // Position 3D characteristic
+                                          // BLECharacteristic::PROPERTY_READ |
+                                          // BLECharacteristic::PROPERTY_WRITE |
+                                          BLECharacteristic::PROPERTY_NOTIFY
                                         );
-      pCharacteristic->setValue("Hello World");
+      pCharacteristic->addDescriptor(new BLE2902());
+
+      //TODO: consider adding a steps counter characteristic for dead reckoning 
       pService->start();
       BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-      pAdvertising->addServiceUUID(SERVICE_UUID);
+      pAdvertising->addServiceUUID(pService->getUUID());
       pAdvertising->setScanResponse(true);
-      pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
-      pAdvertising->setMinPreferred(0x12);
+      // pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
+      // pAdvertising->setMinPreferred(0x12);
+      pAdvertising->setMinPreferred(0x0);
+      pAdvertising->setMinPreferred(0x1F);
       BLEDevice::startAdvertising();
-      Serial.println("Characteristic defined! Now you can read it in your phone!");
+      Serial.println("BLE started");
       bluetooth_started = true;
+    }
+
+    // Continuously update Bluetooth signals
+    unsigned long current_millis = millis();
+    if (current_millis - general_purpose_timer > 2000) {
+      // General purpose timer which fires every 2 seconds
+      general_purpose_timer = current_millis;
+      if (deviceConnected) {
+        String str_to_send = "Hello World" + (String)current_millis;
+        pCharacteristic->setValue(str_to_send.c_str());
+        pCharacteristic->notify();
+        Serial.println(str_to_send);
+      }
     }
   }
 }
