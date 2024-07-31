@@ -15,7 +15,7 @@
 #include <Adafruit_DRV2605.h>
 
 // #define FAST_MODE
-#define BNO08X_RESET D3
+#define BNO08X_RESET D1
 
 struct euler_t {
   float yaw;
@@ -44,6 +44,14 @@ void setup(void) {
   Serial.begin(115200);
   while (!Serial) delay(10);     // will pause Zero, Leonardo, etc until serial console opens
 
+  if (!drv.begin()) {
+    Serial.println("Could not find DRV2605");
+    while (1) delay(3000);
+  }
+  drv.setMode(DRV2605_MODE_INTTRIG); // default, internal trigger when sending GO command
+  drv.selectLibrary(2);
+  drv.useLRA();
+
   Serial.println("Adafruit BNO08x test!");
 
   // Try to initialize!
@@ -56,16 +64,7 @@ void setup(void) {
   }
   Serial.println("BNO08x Found!");
 
-
   setReports(reportType, reportIntervalUs);
-
-  if (!drv.begin()) {
-    Serial.println("Could not find DRV2605");
-    while (1) delay(3000);
-  }
-  drv.setMode(DRV2605_MODE_INTTRIG); // default, internal trigger when sending GO command
-  drv.selectLibrary(2);
-  drv.useLRA();
 
   Serial.println("Reading events");
   delay(100);
