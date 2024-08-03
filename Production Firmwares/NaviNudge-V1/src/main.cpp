@@ -7,6 +7,8 @@
 #include <BLEServer.h>
 #include "driver/rtc_io.h"
 
+#define DEBUG
+
 // ================================ Variables =================================
 int prev_state = 0; // This is the previous state of the device, so that our state machine can keep track
 int master_state = 0; // This is the master state of the device. 0=Low Power, 1=Standby, 2=Walking Guidance
@@ -35,17 +37,23 @@ struct euler_t {
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 bool deviceConnected = false;
 bool bluetooth_started = false;
-BLECharacteristic *pCharacteristic_IMU, *pCharacteristic_Mode;
+BLECharacteristic *pCharacteristic_IMU, *pCharacteristic_Mode, *pCharacteristic_CurrentBearing, *pCharacteristic_FutureBearing;
 class MyServerCallbacks: public BLEServerCallbacks {
   void onConnect(BLEServer* pServer) {
     deviceConnected = true;
     time_at_initialise = millis();
+#ifdef DEBUG
+    Serial.println("BLE Connected!");
+#endif
   };
   
   void onDisconnect(BLEServer* pServer) {
     deviceConnected = false;
     pServer->startAdvertising(); // Allow reconnects
     time_at_initialise = millis(); // Transition to low power after set time
+#ifdef DEBUG
+    Serial.println("BLE Disconnected!");
+#endif
   }
 };
 // ============================================================================
@@ -56,6 +64,7 @@ void print_wakeup_reason(){
 
   wakeup_reason = esp_sleep_get_wakeup_cause();
 
+#ifdef DEBUG
   switch(wakeup_reason)
   {
     case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
@@ -65,11 +74,14 @@ void print_wakeup_reason(){
     case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
     default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
   }
+#endif
 }
 
 void setReports(sh2_SensorId_t reportType, long report_interval) {
   if (!bno08x.enableReport(reportType, report_interval)) {
+#ifdef DEBUG
     Serial.println("Could not enable report");
+#endif
   }
 }
 
@@ -89,21 +101,29 @@ float variance(float a[], int n)
 // ============================================================================
 
 void setup() {
+#ifdef DEBUG
   Serial.begin(115200);
+#endif
   time_at_initialise = millis();
 
   // Do not bother with initialising peripherals EXCEPT the IMU for motion tracking
   if (!bno08x.begin_UART(&Serial1)) {
+#ifdef DEBUG
     Serial.println("Failed to find BNO08x chip");
-    while (1) { delay(10); }
+#endif
+    while (1) { delay(100); }
   }
+#ifdef DEBUG
   Serial.println("BNO08x Found!");
+#endif
 }
 
 void loop() {
   if (master_state == 0) {
     if (bno08x.wasReset()) {
+#ifdef DEBUG
       Serial.print("sensor was reset ");
+#endif
       setReports(SH2_ACCELEROMETER, 40000); // Accelerometer only, at 25Hz/0.04s period
     }
     if (bno08x.getSensorEvent(&sensorValue)) {
@@ -119,6 +139,10 @@ void loop() {
         if (cache_full) {     // only compute variance upon full cache
           float current_variance = variance(cache_array, 32);
           if (current_variance >= 10) {
+#ifdef DEBUG
+            Serial.print("Accelerometer variance > 0, setting state to 1");
+#endif
+            prev_state = 0;
             master_state = 1; // Transition to Standby state and reset initialisation time
             time_at_initialise = millis();
           }
@@ -138,14 +162,9 @@ void loop() {
     }
   } 
   else if (master_state == 1) {
-    if (millis() - time_at_initialise > 5 * 60 * 1000 && !deviceConnected) {
-      // Timer for 5 minutes to transition back into low power
-      master_state = 0;
-    }
-
     // Start Bluetooth
     if (!bluetooth_started) {
-      BLEDevice::init("NaviNudge Node");
+      BLEDevice::init("NaviNudge Node Left");
       // BLEDevice::setPower(ESP_PWR_LVL_N3);
       BLEServer *pServer = BLEDevice::createServer();
       pServer->setCallbacks(new MyServerCallbacks());
@@ -163,8 +182,20 @@ void loop() {
                                           BLECharacteristic::PROPERTY_READ |
                                           BLECharacteristic::PROPERTY_WRITE
                                         );
+      pCharacteristic_CurrentBearing = pService->createCharacteristic(
+                                          BLEUUID((uint16_t)0x2A5D), // Sensor Location characteristic, used for current bearing
+                                          BLECharacteristic::PROPERTY_READ |
+                                          BLECharacteristic::PROPERTY_WRITE
+                                        );
+      pCharacteristic_FutureBearing = pService->createCharacteristic(
+                                          BLEUUID((uint16_t)0x2A68), // Navigation characteristic, used for future bearing
+                                          BLECharacteristic::PROPERTY_READ |
+                                          BLECharacteristic::PROPERTY_WRITE
+                                        );
       pCharacteristic_IMU->addDescriptor(new BLE2902());
       pCharacteristic_Mode->addDescriptor(new BLE2902());
+      pCharacteristic_CurrentBearing->addDescriptor(new BLE2902());
+      pCharacteristic_FutureBearing->addDescriptor(new BLE2902());
       pCharacteristic_Mode->setValue(master_state); // Set to current mode
 
       //TODO: consider adding a steps counter characteristic for dead reckoning 
@@ -177,7 +208,9 @@ void loop() {
       pAdvertising->setMinPreferred(0x0);
       pAdvertising->setMinPreferred(0x1F);
       BLEDevice::startAdvertising();
+#ifdef DEBUG
       Serial.println("BLE started");
+#endif
       bluetooth_started = true;
     }
 
@@ -189,20 +222,39 @@ void loop() {
       if (deviceConnected) {
         uint8_t* current_mode = pCharacteristic_Mode->getData();
         // Allow for mode transitions here! For example to walking mode
+#ifdef DEBUG
         Serial.println(current_mode[0]);
+#endif
         if ((int)current_mode[0] == 2) {
           // State machine transition to walking guidance mode
           prev_state = master_state;
           master_state = 2;
+#ifdef DEBUG
           Serial.println("Changing to walking");
+#endif
         }
       }
+    }
+
+    if (millis() - time_at_initialise > (60 * 1000) && !deviceConnected) {
+      // Timer for 60 seconds to transition back into low power
+      prev_state = 1;
+#ifdef DEBUG
+      Serial.println("Transitioning back to low power");
+#endif
+      // Reset the accelerometer cache because the previous cache with high variance still exists!
+      for (int i=0; i<32; i++) {
+        cache_array[i] = 0.0;
+      }
+      master_state = 0;
     }
   } 
   else if (master_state == 2) {
     if (deviceConnected) {
       if (!IMU_ARVR_started) {
+#ifdef DEBUG
         Serial.println("ARVR not started, resetting sensor");
+#endif
         // if (bno08x.begin_UART(&Serial1)) {
           // Serial.print("sensor was reset ");
           setReports(SH2_ARVR_STABILIZED_RV, 100000); // Full IMU quaternion, 10Hz
@@ -222,13 +274,17 @@ void loop() {
             // Serial.print(rotationalVector.real); Serial.print(",");
             // Serial.print(rotationalVector.i); Serial.print(",");
             // Serial.print(rotationalVector.j); Serial.print(",");
+#ifdef DEBUG
             Serial.println(rotationalVector.k); 
+#endif
           }
         }
       }
     } else {
       // Switch out of walking guidance due to no bluetooth!
+#ifdef DEBUG
       Serial.println("Switching from mode 2 to mode 1");
+#endif
       bno08x.hardwareReset();
       prev_state = master_state;
       master_state = 1;
