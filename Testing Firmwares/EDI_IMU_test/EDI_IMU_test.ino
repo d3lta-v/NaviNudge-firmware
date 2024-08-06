@@ -15,7 +15,7 @@
 #include <Adafruit_DRV2605.h>
 
 // #define FAST_MODE
-#define BNO08X_RESET D1
+#define BNO08X_RESET D3
 
 struct euler_t {
   float yaw;
@@ -171,6 +171,10 @@ void loop() {
     Serial.print(now - last);             Serial.print("\t");
     last = now;
     Serial.print(sensorValue.status);     Serial.print("\t");  // This is accuracy in the range of 0 to 3
+    Serial.print(sensorValue.un.arvrStabilizedRV.real);Serial.print("\t");
+    Serial.print(sensorValue.un.arvrStabilizedRV.i);   Serial.print("\t");
+    Serial.print(sensorValue.un.arvrStabilizedRV.j);   Serial.print("\t");
+    Serial.print(sensorValue.un.arvrStabilizedRV.k);   Serial.print("\t");
     Serial.println(current_heading);
 
     actuate_haptic(180.0f, current_heading);
