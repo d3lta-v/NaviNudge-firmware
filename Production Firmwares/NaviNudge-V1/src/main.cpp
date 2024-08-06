@@ -16,7 +16,9 @@ int master_state = 0; // This is the master state of the device. 0=Low Power, 1=
 unsigned long time_at_initialise = 0;
 unsigned long general_purpose_timer = 0;
 bool IMU_ARVR_started = false;
-float cache_array[32] = {0.0}; int cache_array_index = 0; bool cache_full = false; // Caching for computation of variance
+float cache_array[32] = {0.0f}; int cache_array_index = 0; bool cache_full = false; // Caching for computation of variance
+double currentBearing = 0.0;
+double futureBearing = 0.0;
 // ============================================================================
 
 // ============================ Pin definitions ===============================
@@ -39,7 +41,8 @@ struct euler_t {
 bool deviceConnected = false;
 bool bluetooth_started = false;
 BLECharacteristic *pCharacteristic_IMU, *pCharacteristic_Mode, *pCharacteristic_CurrentBearing, *pCharacteristic_FutureBearing;
-class MyServerCallbacks: public BLEServerCallbacks {
+
+class BTServerCallbacks: public BLEServerCallbacks {
   void onConnect(BLEServer* pServer) {
     deviceConnected = true;
     time_at_initialise = millis();
@@ -55,6 +58,39 @@ class MyServerCallbacks: public BLEServerCallbacks {
 #ifdef DEBUG
     Serial.println("BLE Disconnected!");
 #endif
+  }
+};
+
+class BTCharacteristicCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    if (pCharacteristic->getUUID().equals(BLEUUID((uint16_t)0x2A5D))) {
+      // Current bearing
+      std::string value = pCharacteristic->getValue(); // getValue returns a string that has to be decoded
+      double bearing = strtod(value.c_str(), NULL);
+      if (bearing != HUGE_VAL && bearing != -HUGE_VAL) {
+        // valid bearing data!!
+        currentBearing = bearing;
+#ifdef DEBUG
+        Serial.print("Valid bearing obtained: ");
+        Serial.println(bearing);
+#endif
+      }
+#ifdef DEBUG
+      else {
+        Serial.println("Invalid bearings!!");
+      }
+#endif
+      // discard bearing if invalid
+    } else if (pCharacteristic->getUUID().equals(BLEUUID((uint16_t)0x2A68))) {
+      // Future bearing
+      std::string value = pCharacteristic->getValue();
+      double bearing = strtod(value.c_str(), NULL);
+      if (bearing != HUGE_VAL && bearing != -HUGE_VAL) {
+        // valid bearing data
+        futureBearing = bearing;
+      }
+      // discard bearing if invalid
+    }
   }
 };
 // ============================================================================
@@ -173,7 +209,7 @@ void loop() {
       BLEDevice::init(DEVICE_NAME);
       // BLEDevice::setPower(ESP_PWR_LVL_N3);
       BLEServer *pServer = BLEDevice::createServer();
-      pServer->setCallbacks(new MyServerCallbacks());
+      pServer->setCallbacks(new BTServerCallbacks());
 
       // For full list of premade BLE UUIDs, refer to this https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/GATT.pdf
       BLEService *pService = pServer->createService(BLEUUID((uint16_t)0x1819)); // Create a location and navigation service
@@ -202,6 +238,8 @@ void loop() {
       pCharacteristic_Mode->addDescriptor(new BLE2902());
       pCharacteristic_CurrentBearing->addDescriptor(new BLE2902());
       pCharacteristic_FutureBearing->addDescriptor(new BLE2902());
+      pCharacteristic_CurrentBearing->setCallbacks(new BTCharacteristicCallbacks());
+      pCharacteristic_FutureBearing->setCallbacks(new BTCharacteristicCallbacks());
       pCharacteristic_Mode->setValue(master_state); // Set to current mode
 
       //TODO: consider adding a steps counter characteristic for dead reckoning 
