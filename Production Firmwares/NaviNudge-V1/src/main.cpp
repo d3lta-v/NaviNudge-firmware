@@ -7,8 +7,12 @@
 #include <BLEServer.h>
 #include "driver/rtc_io.h"
 
-// #define DEBUG
-#define DEVICE_NAME "NaviNudge Node Right"
+#define DEBUG
+enum LeftRight {
+  Left,
+  Right
+};
+static const enum LeftRight handedness = Left;
 
 // ================================ Variables =================================
 int prev_state = 0; // This is the previous state of the device, so that our state machine can keep track
@@ -28,6 +32,8 @@ double futureBearing = 0.0;
 // ============================ Sensor Classes ================================
 Adafruit_BNO08x bno08x(BNO08X_RESET); sh2_SensorValue_t sensorValue;
 Adafruit_DRV2605 drv;
+unsigned long drvPreviousMillis = 0UL; unsigned long drvDelay = 500UL; // drvDelay describes the amount of time between each pulse
+unsigned long drvCompleteMillis = 0UL; // This indicates the last time at which bearing data is available and should fire the haptic motor. Basically: when bearing not updated, DO NOT fire motor!
 struct euler_t {
   float yaw;
   float pitch;
@@ -81,6 +87,9 @@ class BTCharacteristicCallbacks : public BLECharacteristicCallbacks {
       }
 #endif
       // discard bearing if invalid
+      // Since we know that bearing data has been updated, it is safe to fire the haptic motors for approx. 2s
+      unsigned long currentMillis = millis();
+      drvCompleteMillis = currentMillis;
     } else if (pCharacteristic->getUUID().equals(BLEUUID((uint16_t)0x2A68))) {
       // Future bearing
       std::string value = pCharacteristic->getValue();
@@ -90,6 +99,10 @@ class BTCharacteristicCallbacks : public BLECharacteristicCallbacks {
         futureBearing = bearing;
       }
       // discard bearing if invalid
+
+      // Since we know that bearing data has been updated, it is safe to fire the haptic motors for approx. 2s
+      unsigned long currentMillis = millis();
+      drvCompleteMillis = currentMillis;
     }
   }
 };
@@ -134,7 +147,53 @@ float variance(float a[], int n)
   for (int i = 0; i < n; i++) 
       sqDiff += (a[i] - mean) * (a[i] - mean); 
   return (float)sqDiff / n; 
-} 
+}
+
+void actuate_haptic(double desired_heading, double current_heading) {
+  // 180 +- 20 = walk forward, 225+- 25 = mild right, 135+-25 = mild left
+  // 270 +- 20 = sharp right, 90 +- 20 = sharp left, >290 or <70 = turn around
+
+  unsigned long currentMillis = millis();
+  if (currentMillis - drvPreviousMillis >= drvDelay) {
+    // Finished vibration!
+    drvPreviousMillis = currentMillis;
+    if (current_heading - desired_heading <= 30 && current_heading - desired_heading > -30) { //walk forward 
+      drv.setWaveform(0, 9);
+      drv.go();
+      drvDelay = 1500;
+    }
+    
+    if (current_heading - desired_heading <= 70 && current_heading - desired_heading > 30 && handedness == Left) { //mild right
+      drv.setWaveform(0, 39);
+      drv.go();
+      drvDelay = 1500;
+    }
+
+    if (current_heading - desired_heading <= 110 && current_heading - desired_heading > 70 && handedness == Left) { //sharp right
+      drv.setWaveform(0, 39);
+      drv.go();
+      drvDelay = 500;
+    }
+
+    if (current_heading - desired_heading <= -110 || current_heading - desired_heading > 110) { //turn around
+      drv.setWaveform(0, 53);
+      drv.go();
+      drvDelay = 500;
+    }
+
+    if (current_heading - desired_heading <= -70 && current_heading - desired_heading > -110 && handedness == Right) { //sharp left
+      drv.setWaveform(0, 39);
+      drv.go();
+      drvDelay = 500;
+    }
+
+    if (current_heading - desired_heading <= -30 && current_heading - desired_heading > -70 && handedness == Right) { //mild left
+      drv.setWaveform(0, 39);
+      drv.go();
+      drvDelay = 1500;
+    }
+  }
+}
 // ============================================================================
 
 void setup() {
@@ -145,7 +204,6 @@ void setup() {
 #endif
   time_at_initialise = millis();
 
-  // Do not bother with initialising peripherals EXCEPT the IMU for motion tracking
   if (!bno08x.begin_UART(&Serial1)) {
 #ifdef DEBUG
     Serial.println("Failed to find BNO08x chip");
@@ -155,10 +213,26 @@ void setup() {
 #ifdef DEBUG
   Serial.println("BNO08x Found!");
 #endif
+  if (!drv.begin()) {
+#ifdef DEBUG
+    Serial.println("Could not find DRV2605");
+#endif
+    while (1) delay(3000);
+  }
+#ifdef DEBUG
+  Serial.println("DRV2605 Found!");
+#endif
+  drv.writeRegister8(DRV2605_REG_MODE, 0x40); // standby mode, no need to take it out of standby since it auto-resumes
 }
 
 void loop() {
   if (master_state == 0) {
+    if (prev_state == 2) {
+      // Place all peripherals into low power
+      drv.writeRegister8(DRV2605_REG_MODE, 0x40);
+      IMU_ARVR_started = false;
+      prev_state = 0;
+    }
     digitalWrite(LED_BUILTIN, LOW);
     if (bno08x.wasReset()) {
 #ifdef DEBUG
@@ -197,16 +271,24 @@ void loop() {
       //TODO: add sleep mode to IMU
       // deep sleep for 1 seconds if system is still in low power mode
       esp_sleep_enable_timer_wakeup(1 * 1000000);
-      rtc_gpio_isolate(GPIO_NUM_5);
-      rtc_gpio_isolate(GPIO_NUM_6);
       esp_deep_sleep_start();
     }
   } 
   else if (master_state == 1) {
+    if (prev_state == 2) {
+      // Place all peripherals into low power
+      drv.writeRegister8(DRV2605_REG_MODE, 0x40);
+      IMU_ARVR_started = false;
+      prev_state = 1;
+    }
     digitalWrite(LED_BUILTIN, LOW);
     // Start Bluetooth
     if (!bluetooth_started) {
-      BLEDevice::init(DEVICE_NAME);
+      if (handedness == Left) {
+        BLEDevice::init("NaviNudge Node Left");
+      } else {
+        BLEDevice::init("NaviNudge Node Right");
+      }
       // BLEDevice::setPower(ESP_PWR_LVL_N3);
       BLEServer *pServer = BLEDevice::createServer();
       pServer->setCallbacks(new BTServerCallbacks());
@@ -276,7 +358,7 @@ void loop() {
 #endif
         if ((int)current_mode[0] == 2) {
           // State machine transition to walking guidance mode
-          prev_state = master_state;
+          prev_state = 1;
           master_state = 2;
 #ifdef DEBUG
           Serial.println("Changing to walking");
@@ -300,7 +382,20 @@ void loop() {
   } 
   else if (master_state == 2) {
     if (deviceConnected) {
+      uint8_t* current_mode = pCharacteristic_Mode->getData();
+      if ((int)current_mode[0] == 1) {
+        // State machine transition to walking guidance mode
+        prev_state = 2;
+        master_state = 1;
+#ifdef DEBUG
+        Serial.println("Changing to mode 1");
+#endif
+      }
       if (!IMU_ARVR_started) {
+        // Setup DRV as well, since it hasn't been set up yet in init
+        drv.setMode(DRV2605_MODE_INTTRIG);
+        drv.selectLibrary(2);
+        drv.useLRA();
 #ifdef DEBUG
         Serial.println("ARVR not started, resetting sensor");
 #endif
@@ -310,6 +405,10 @@ void loop() {
           IMU_ARVR_started = true;
         // }
       } else {
+        if (millis() - drvCompleteMillis <= 3500) {
+          // actuate haptic motor only if bearing is not stale
+          actuate_haptic(futureBearing, currentBearing);
+        }
         if (bno08x.getSensorEvent(&sensorValue)) {
           // The "barrage" of IMU data starts here!
           digitalWrite(LED_BUILTIN, LOW);
@@ -320,13 +419,6 @@ void loop() {
             // String str_to_send = "Hello World" + (String)current_millis;
             pCharacteristic_IMU->setValue(buffer);
             pCharacteristic_IMU->notify();
-            // Serial.print(sensorValue.status); Serial.print(",");
-            // Serial.print(rotationalVector.real); Serial.print(",");
-            // Serial.print(rotationalVector.i); Serial.print(",");
-            // Serial.print(rotationalVector.j); Serial.print(",");
-#ifdef DEBUG
-            Serial.println(rotationalVector.k); 
-#endif
           }
         } else {
           digitalWrite(LED_BUILTIN, HIGH);
@@ -338,7 +430,7 @@ void loop() {
       Serial.println("Switching from mode 2 to mode 1");
 #endif
       bno08x.hardwareReset();
-      prev_state = master_state;
+      prev_state = 2;
       master_state = 1;
       pCharacteristic_Mode->setValue(master_state);
     }
