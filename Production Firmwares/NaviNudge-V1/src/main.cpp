@@ -7,7 +7,8 @@
 #include <BLEServer.h>
 #include "driver/rtc_io.h"
 
-#define DEBUG
+// #define DEBUG
+#define DEVICE_NAME "NaviNudge Node Right"
 
 // ================================ Variables =================================
 int prev_state = 0; // This is the previous state of the device, so that our state machine can keep track
@@ -101,6 +102,8 @@ float variance(float a[], int n)
 // ============================================================================
 
 void setup() {
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
 #ifdef DEBUG
   Serial.begin(115200);
 #endif
@@ -120,6 +123,7 @@ void setup() {
 
 void loop() {
   if (master_state == 0) {
+    digitalWrite(LED_BUILTIN, LOW);
     if (bno08x.wasReset()) {
 #ifdef DEBUG
       Serial.print("sensor was reset ");
@@ -152,6 +156,7 @@ void loop() {
 
     if (millis() - time_at_initialise > 2000 && master_state == 0) {
       // Shutoff peripherals
+      digitalWrite(LED_BUILTIN, HIGH);
       bno08x.hardwareReset();
       //TODO: add sleep mode to IMU
       // deep sleep for 1 seconds if system is still in low power mode
@@ -162,9 +167,10 @@ void loop() {
     }
   } 
   else if (master_state == 1) {
+    digitalWrite(LED_BUILTIN, LOW);
     // Start Bluetooth
     if (!bluetooth_started) {
-      BLEDevice::init("NaviNudge Node Left");
+      BLEDevice::init(DEVICE_NAME);
       // BLEDevice::setPower(ESP_PWR_LVL_N3);
       BLEServer *pServer = BLEDevice::createServer();
       pServer->setCallbacks(new MyServerCallbacks());
@@ -207,6 +213,11 @@ void loop() {
       // pAdvertising->setMinPreferred(0x12);
       pAdvertising->setMinPreferred(0x0);
       pAdvertising->setMinPreferred(0x1F);
+
+      // Set onWrite callbacks
+      // BLECharacteristicCallbacks pCharacteristic_Mode_onWrite_callback = BLECharacteristicCallbacks();
+      // pCharacteristic_Mode->setCallbacks
+
       BLEDevice::startAdvertising();
 #ifdef DEBUG
       Serial.println("BLE started");
@@ -257,12 +268,13 @@ void loop() {
 #endif
         // if (bno08x.begin_UART(&Serial1)) {
           // Serial.print("sensor was reset ");
-          setReports(SH2_ARVR_STABILIZED_RV, 100000); // Full IMU quaternion, 10Hz
+          setReports(SH2_ARVR_STABILIZED_RV, 200000); // Full IMU quaternion, 5Hz
           IMU_ARVR_started = true;
         // }
       } else {
         if (bno08x.getSensorEvent(&sensorValue)) {
           // The "barrage" of IMU data starts here!
+          digitalWrite(LED_BUILTIN, LOW);
           if (sensorValue.sensorId == SH2_ARVR_STABILIZED_RV) {
             sh2_RotationVectorWAcc_t rotationalVector = sensorValue.un.arvrStabilizedRV;
             char buffer[64];
@@ -278,6 +290,8 @@ void loop() {
             Serial.println(rotationalVector.k); 
 #endif
           }
+        } else {
+          digitalWrite(LED_BUILTIN, HIGH);
         }
       }
     } else {
